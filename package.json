@@ -51,7 +51,7 @@
         "pairletLive.autoOpenNewPhoneSession": {
           "type": "boolean",
           "default": true,
-          "description": "检测到新的手机会话（TSV 中新出现且已写入消息）时，自动把直播视图切换到该会话。关闭后改为在面板顶部显示「新的手机会话」提示条，点击查看。仅在 pairletLive.autoReveal 开启时生效。"
+          "description": "检测到新的手机会话（TSV 中新出现且已写入消息）时，自动把直播视图切换到该会话所属项目的合并视图。关闭后改为在面板顶部显示「新的手机会话」提示条，点击查看。仅在 pairletLive.autoReveal 开启时生效。"
         },
         "pairletLive.notifyWaiting": {
           "type": "boolean",
@@ -70,9 +70,10 @@
     "check:paths": "node scripts/check-pathlink.mjs",
     "check:paging": "node scripts/check-paging.mjs",
     "check:grouping": "node scripts/check-grouping.mjs",
+    "check:merge": "node scripts/check-merge.mjs",
     "check:pending": "node scripts/check-pending.mjs",
     "check:boot": "node scripts/check-webview-boot.mjs",
-    "check:ci": "npm run check:tailer && npm run check:paging && npm run check:grouping && npm run check:pending && npm run check:boot",
+    "check:ci": "npm run check:tailer && npm run check:paging && npm run check:grouping && npm run check:merge && npm run check:pending && npm run check:boot",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {

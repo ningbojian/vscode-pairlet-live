@@ -13,7 +13,8 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import { TranscriptTailer, readTail, readOlderChunk, TailStart, CHUNK_BYTES } from "./tailer";
-import { parseLines, statsFromLines, RenderItem } from "./transcript";
+import { parseLine, parseLines, statsFromLines, RenderItem } from "./transcript";
+import { mergeSessionItems, MergeSessionInput } from "./merge";
 import {
   loadPhoneSessions,
   phoneSessionsFile,
@@ -43,6 +44,14 @@ const PHONE_POLL_MS = 2500;
 /** Skip full message-count parse for very large transcripts (avoids repeated
  *  multi-second re-reads of huge, actively-growing files on each 10s refresh). */
 const MAX_COUNT_BYTES = 8 * 1024 * 1024;
+/** How many most-recent session files a merged project view loads. */
+const MERGED_SESSION_CAP = 8;
+/**
+ * Per-session read window for the merged view. Larger than the single-session
+ * 512KB tail because the merged view has no scroll-up pagination and recent
+ * user prompts otherwise fall outside a short window.
+ */
+const MERGED_TAIL_BYTES = 2 * 1024 * 1024;
 
 interface SessionInfo {
   filePath: string;
@@ -57,6 +66,16 @@ interface SessionInfo {
   pending: boolean;
   /** Unresolved tool names when pending (for badge/notification text). */
   waitingTools: string[];
+}
+
+/** Per-session state of the currently open merged project view. */
+interface OpenSessionState {
+  sessionId: string;
+  filePath: string;
+  phone: boolean;
+  items: RenderItem[];
+  /** Last append / file mtime, used for the ⏸ idle clock. */
+  lastAppendMs: number;
 }
 
 interface MetaCacheEntry {
@@ -100,18 +119,21 @@ export function isPathInside(child: string, parent: string): boolean {
 
 export class PairletLiveProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
-  private tailer: TranscriptTailer | undefined;
-  private openFile: string | undefined;
-  /** cwd recorded in the open session's transcript (for openPath resolution). */
+  /** One tailer per session file in the open project (merged view). */
+  private tailers: TranscriptTailer[] = [];
+  /** Slug dir name of the open project, or undefined while the list is shown. */
+  private openProjectDir: string | undefined;
+  private openProjectLabel: string | undefined;
+  /** cwd recorded in the open project's transcripts (for openPath resolution). */
   private openCwd: string | undefined;
   /** Session already auto-revealed; repeated appends must not re-reveal it. */
   private revealedSessionId: string | undefined;
-  /** Byte offset where the open session's displayed window starts (pagination). */
-  private chunkStart = 0;
-  /** Host-side copy of the open session's parsed items (pending detection). */
-  private openItems: RenderItem[] | undefined;
-  /** ms timestamp of the open session's last append (idle clock). */
-  private openLastAppendMs = 0;
+  /** Per-session parsed items + idle clock for the open merged project. */
+  private readonly openSessionState = new Map<string, OpenSessionState>();
+  /** Uuids already shown in the open merged view (shared history de-dupe). */
+  private seenUuids = new Set<string>();
+  /** Scroll-up pagination state — only when the project has ONE session. */
+  private singleChunk: { filePath: string; startOffset: number } | undefined;
   /** One-shot phone pending-alert tracker (idle->pending transitions). */
   private readonly pendingAlerts = new PendingAlertTracker();
   private sessions: SessionInfo[] = [];
@@ -138,7 +160,15 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
     webview.html = getHtml(webview, nonce, this.context.extensionPath);
 
     webview.onDidReceiveMessage((msg: unknown) => {
-      const m = msg as { type?: string; filePath?: string; path?: string; line?: number };
+      const m = msg as {
+        type?: string;
+        filePath?: string;
+        projectDir?: string;
+        projectLabel?: string;
+        focusSessionId?: string;
+        path?: string;
+        line?: number;
+      };
       if (!m || typeof m.type !== "string") {
         return;
       }
@@ -154,13 +184,21 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
             this.openSession(m.filePath);
           }
           break;
+        case "openProject":
+          if (typeof m.projectDir === "string") {
+            this.openProject(
+              m.projectDir,
+              typeof m.projectLabel === "string" ? m.projectLabel : "",
+              typeof m.focusSessionId === "string" ? m.focusSessionId : undefined
+            );
+          }
+          break;
         case "back":
           this.closeTail();
-          this.openFile = undefined;
+          this.openProjectDir = undefined;
+          this.openProjectLabel = undefined;
           this.openCwd = undefined;
           this.revealedSessionId = undefined;
-          this.chunkStart = 0;
-          this.openItems = undefined;
           break;
         case "loadOlder":
           this.serveOlderChunk();
@@ -190,16 +228,15 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
     });
 
     webviewView.onDidDispose(() => {
-      // View removed: stop the tailer + timer so nothing posts into a future
+      // View removed: stop the tailers + timer so nothing posts into a future
       // webview, and clear per-view state so a re-resolve starts fresh.
       this.stopRefreshTimer();
       this.closeTail();
       this.view = undefined;
-      this.openFile = undefined;
+      this.openProjectDir = undefined;
+      this.openProjectLabel = undefined;
       this.openCwd = undefined;
       this.revealedSessionId = undefined;
-      this.chunkStart = 0;
-      this.openItems = undefined;
     });
 
     this.postSessions();
@@ -370,11 +407,12 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
 
   /**
    * Phone activity that happens while the user is watching a different
-   * session must not stay invisible:
+   * project must not stay invisible:
    *  - a phone session that was absent on the previous scan (new conversation):
-   *    autoOpenNewPhoneSession -> switch the live view to it, else show a bar;
+   *    autoOpenNewPhoneSession -> switch the live view to its project, else a bar;
    *  - an existing phone session whose transcript grew (phone continued it):
-   *    show a one-click bar (never yank the view away from the current session).
+   *    show a one-click bar (never yank the view away from the current project).
+   * Activity inside the OPEN project is already on screen and never alerts.
    * The first scan only establishes a baseline, so opening the panel never
    * hijacks the view for conversations that already existed.
    */
@@ -388,18 +426,31 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
     const active = activePhoneSessions(current, this.knownPhoneMtimes);
     this.knownPhoneMtimes = current;
     // List view already re-renders with the new row; a disposed view has no UI.
-    if (!this.view || !this.openFile) {
+    if (!this.view || !this.openProjectDir) {
       return;
     }
+    const openProjectDir = this.openProjectDir;
     const byId = new Map(this.sessions.map((s) => [s.sessionId, s]));
-    const freshCandidates = fresh
+    const isOpen = (s: SessionInfo): boolean => s.projectDir === openProjectDir;
+    const freshSessions = fresh
       .map((id) => byId.get(id))
       .filter((s): s is SessionInfo => !!s)
-      .filter((s) => s.filePath !== this.openFile && !this.announcedPhoneSessions.has(s.sessionId))
       .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    // A brand-new session file inside the open project is not in the merged
+    // stream yet (its tailer was never started): rebuild so it becomes visible.
+    const freshInOpen = freshSessions.filter(isOpen);
+    if (freshInOpen.length > 0) {
+      const target = freshInOpen[0];
+      this.openProject(openProjectDir, this.openProjectLabel ?? target.projectLabel, target.sessionId);
+    }
+
     const cfg = vscode.workspace.getConfiguration("pairletLive");
     const autoReveal = cfg.get<boolean>("autoReveal", true);
     const autoOpen = autoReveal && cfg.get<boolean>("autoOpenNewPhoneSession", true);
+    const freshCandidates = freshSessions.filter(
+      (s) => !isOpen(s) && !this.announcedPhoneSessions.has(s.sessionId)
+    );
     if (autoOpen && freshCandidates.length > 0) {
       const target = freshCandidates.shift()!;
       this.openSession(target.filePath);
@@ -412,16 +463,13 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
         reason: "new",
         sessionId: s.sessionId,
         filePath: s.filePath,
+        projectDir: s.projectDir,
         projectLabel: s.projectLabel
       });
     }
     for (const id of active) {
       const s = byId.get(id);
-      if (
-        !s ||
-        s.filePath === this.openFile ||
-        this.announcedPhoneSessions.has(s.sessionId)
-      ) {
+      if (!s || isOpen(s) || this.announcedPhoneSessions.has(s.sessionId)) {
         continue;
       }
       this.announcedPhoneSessions.add(s.sessionId);
@@ -430,6 +478,7 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
         reason: "activity",
         sessionId: s.sessionId,
         filePath: s.filePath,
+        projectDir: s.projectDir,
         projectLabel: s.projectLabel
       });
     }
@@ -483,32 +532,42 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
     this.openSession(filePath);
   }
 
-  /** Post the ⏸ waiting strip state for the currently open session. */
+  /**
+   * Post the ⏸ waiting strip for the open merged project. Each session is
+   * evaluated against its own item stream and idle clock; the most recently
+   * active pending session wins (only one strip can be shown).
+   */
   private postOpenPendingState(): void {
-    if (!this.openFile || !this.openItems) {
+    if (!this.openProjectDir) {
       return;
     }
-    const idleMs = Date.now() - this.openLastAppendMs;
-    const status = computePending(this.openItems, idleMs);
+    let best: { status: PendingStatus; at: number } | undefined;
+    for (const s of this.openSessionState.values()) {
+      const status = computePending(s.items, Date.now() - s.lastAppendMs);
+      if (status.pending && (!best || s.lastAppendMs > best.at)) {
+        best = { status, at: s.lastAppendMs };
+      }
+    }
     void this.view?.webview.postMessage({
       type: "pendingState",
-      pending: status.pending,
-      toolNames: capToolNames(status.toolNames)
+      pending: !!best,
+      toolNames: best ? capToolNames(best.status.toolNames) : ""
     });
   }
 
   /**
-   * Serve one lazy older-chunk read for the open (truncated) session.
-   * Independent read — never touches the tailer's offset state.
+   * Scroll-up history for a ONE-session project (the merged multi-session view
+   * has no single file offset, so it answers "done" and never paginates).
    */
   private serveOlderChunk(): void {
-    if (!this.openFile || this.chunkStart <= 0) {
+    const single = this.singleChunk;
+    if (!single || single.startOffset <= 0) {
       void this.view?.webview.postMessage({ type: "olderChunk", items: [], newStartOffset: 0, done: true });
       return;
     }
     try {
-      const chunk = readOlderChunk(this.openFile, this.chunkStart, CHUNK_BYTES);
-      this.chunkStart = chunk.newStartOffset;
+      const chunk = readOlderChunk(single.filePath, single.startOffset, CHUNK_BYTES);
+      single.startOffset = chunk.newStartOffset;
       void this.view?.webview.postMessage({
         type: "olderChunk",
         items: parseLines(chunk.lines),
@@ -517,79 +576,243 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
       });
     } catch {
       // Unreadable: report done so the webview stops asking; never throw.
-      this.chunkStart = 0;
+      single.startOffset = 0;
       void this.view?.webview.postMessage({ type: "olderChunk", items: [], newStartOffset: 0, done: true });
     }
   }
 
   // ---------- live stream ----------
 
+  /**
+   * Open the merged project that owns `filePath` (phone alert / notification
+   * target). The list view opens projects directly; this keeps the old
+   * file-oriented entry points working without a separate single-session mode.
+   */
   private openSession(filePath: string): void {
-    // Safety: only allow reading .jsonl under ~/.claude/projects.
     const root = path.resolve(projectsRoot());
     const resolved = path.resolve(filePath);
-    if (!resolved.toLowerCase().endsWith(".jsonl") || !resolved.toLowerCase().startsWith(root.toLowerCase() + path.sep)) {
+    if (!resolved.toLowerCase().endsWith(".jsonl") || !isPathInside(resolved, root)) {
       void vscode.window.showWarningMessage("Pairlet Live 仅允许只读打开 ~/.claude/projects 下的会话文件。");
       return;
     }
-    this.closeTail();
-    this.openFile = resolved;
-    this.revealedSessionId = undefined; // newly opened session may re-reveal
+    const session = this.sessions.find((s) => s.filePath === resolved);
+    const projectDir = session?.projectDir ?? path.basename(path.dirname(resolved));
+    const label = session?.projectLabel ?? this.projectLabelFor(projectDir);
+    this.openProject(projectDir, label, session?.sessionId ?? path.basename(resolved, ".jsonl"));
+  }
 
-    let start: TailStart;
+  private projectLabelFor(projectDir: string): string {
+    const found = this.sessions.find((s) => s.projectDir === projectDir);
+    return found?.projectLabel ?? decodeSlugDir(projectDir);
+  }
+
+  /**
+   * Open ONE project as a single merged live stream. All session files in the
+   * project directory are read (most recent MERGED_SESSION_CAP), parsed, and
+   * merged chronologically with uuid de-duplication so `--resume` copies of the
+   * shared history appear once. Every selected file gets its own tailer, so new
+   * output from any session shows up in the same window.
+   */
+  private openProject(projectDir: string, projectLabel: string, focusSessionId?: string): void {
+    if (
+      !projectDir ||
+      projectDir === "." ||
+      projectDir === ".." ||
+      projectDir.includes("/") ||
+      projectDir.includes("\\")
+    ) {
+      return;
+    }
+    const root = path.resolve(projectsRoot());
+    const dir = path.resolve(root, projectDir);
+    if (!isPathInside(dir, root) || path.dirname(dir) !== root) {
+      return;
+    }
+
+    this.closeTail();
+    this.openProjectDir = projectDir;
+    this.openProjectLabel = projectLabel || decodeSlugDir(projectDir);
+    this.openCwd = undefined;
+    this.revealedSessionId = undefined;
+
+    let names: string[];
     try {
-      start = readTail(resolved);
-    } catch (e) {
+      names = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
+    } catch {
+      void this.view?.webview.postMessage({ type: "streamError", message: `无法读取项目目录：${dir}` });
+      return;
+    }
+
+    interface Candidate {
+      filePath: string;
+      sessionId: string;
+      stat: fs.Stats;
+      phone: boolean;
+    }
+    const candidates: Candidate[] = [];
+    for (const f of names) {
+      const filePath = path.join(dir, f);
+      try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) {
+          continue;
+        }
+        const sessionId = f.replace(/\.jsonl$/, "");
+        candidates.push({ filePath, sessionId, stat, phone: this.phoneInfo.sessionIds.has(sessionId) });
+      } catch {
+        /* skip unreadable file */
+      }
+    }
+    candidates.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+    const selected = candidates.slice(0, MERGED_SESSION_CAP);
+    // A notification may point at an older session outside the recent cap.
+    if (focusSessionId && !selected.some((c) => c.sessionId === focusSessionId)) {
+      const focus = candidates.find((c) => c.sessionId === focusSessionId);
+      if (focus) {
+        selected.push(focus);
+      }
+    }
+    if (selected.length === 0) {
       void this.view?.webview.postMessage({
         type: "streamError",
-        message: `无法读取会话文件：${(e as Error).message}`
+        message: "该项目下没有可读取的会话文件。"
       });
       return;
     }
-    const items = parseLines(start.lines);
-    const session = this.sessions.find((s) => s.filePath === resolved);
-    const sessionId = session?.sessionId ?? path.basename(resolved, ".jsonl");
-    // Re-arm activity alerts for this session: once the user has looked at it,
-    // a later phone message should be able to raise the bar again.
-    this.announcedPhoneSessions.delete(sessionId);
-    // Transcript cwd of the open session — resolution base for relative paths.
-    const tailStats = statsFromLines(start.lines);
-    this.openCwd = tailStats.cwd && /[\\/]/.test(tailStats.cwd) ? tailStats.cwd : undefined;
-    // Pagination: older chunks are read below windowStart (0 => fully shown).
-    this.chunkStart = start.windowStart;
-    // Host-side item copy for ⏸ pending detection on every refresh.
-    this.openItems = items.slice();
-    try {
-      this.openLastAppendMs = fs.statSync(resolved).mtimeMs;
-    } catch {
-      this.openLastAppendMs = Date.now();
+
+    const prepared: Array<{ candidate: Candidate; start: TailStart; items: RenderItem[] }> = [];
+    for (const c of selected) {
+      let start: TailStart;
+      try {
+        start = readTail(c.filePath, MERGED_TAIL_BYTES);
+      } catch {
+        continue;
+      }
+      const items = parseLines(start.lines);
+      this.openSessionState.set(c.sessionId, {
+        sessionId: c.sessionId,
+        filePath: c.filePath,
+        phone: c.phone,
+        items,
+        lastAppendMs: c.stat.mtimeMs
+      });
+      prepared.push({ candidate: c, start, items });
     }
+    if (prepared.length === 0) {
+      void this.view?.webview.postMessage({
+        type: "streamError",
+        message: "无法读取该项目下的会话文件。"
+      });
+      return;
+    }
+
+    const inputs: MergeSessionInput[] = prepared.map((p) => ({
+      sessionId: p.candidate.sessionId,
+      filePath: p.candidate.filePath,
+      phone: p.candidate.phone,
+      birthtimeMs: p.candidate.stat.birthtimeMs || p.candidate.stat.mtimeMs,
+      mtimeMs: p.candidate.stat.mtimeMs,
+      truncated: p.start.truncated,
+      items: p.items
+    }));
+    const merged = mergeSessionItems(inputs);
+    this.seenUuids = merged.seenUuids;
+
+    // Exact cwd from a transcript beats the (possibly lossy) project label for
+    // relative-path resolution. Never take this from webview input.
+    for (const p of prepared) {
+      const cwd = statsFromLines(p.start.lines).cwd;
+      if (cwd && /[\\/]/.test(cwd)) {
+        this.openCwd = cwd;
+        break;
+      }
+    }
+    if (!this.openCwd && /[\\/]/.test(this.openProjectLabel)) {
+      this.openCwd = this.openProjectLabel;
+    }
+
+    const focus = prepared.find((p) => p.candidate.sessionId === focusSessionId) ?? prepared[0];
+    // Pagination is only meaningful for a one-session project.
+    const single = prepared.length === 1 ? prepared[0] : undefined;
+    this.singleChunk =
+      single && single.start.windowStart > 0
+        ? { filePath: single.candidate.filePath, startOffset: single.start.windowStart }
+        : undefined;
+    // Re-arm phone alerts for every session in the project: once the user has
+    // seen the project, later phone output there may raise the bar again.
+    for (const p of prepared) {
+      this.announcedPhoneSessions.delete(p.candidate.sessionId);
+    }
+
+    const meta = prepared.map((p) => {
+      const s = this.sessions.find((x) => x.sessionId === p.candidate.sessionId);
+      return {
+        sessionId: p.candidate.sessionId,
+        filePath: p.candidate.filePath,
+        phone: p.candidate.phone,
+        label: s?.projectLabel ?? this.openProjectLabel
+      };
+    });
     void this.view?.webview.postMessage({
       type: "streamStart",
-      filePath: resolved,
-      sessionId,
-      projectLabel: session?.projectLabel ?? decodeSlugDir(path.basename(path.dirname(resolved))),
-      truncated: start.truncated,
-      startOffset: start.windowStart,
-      items
+      filePath: focus.candidate.filePath,
+      sessionId: focus.candidate.sessionId,
+      projectDir,
+      projectLabel: this.openProjectLabel,
+      merged: prepared.length > 1,
+      focusSessionId: focusSessionId ?? focus.candidate.sessionId,
+      sessions: meta,
+      truncated: single
+        ? single.start.truncated
+        : merged.truncated || candidates.length > selected.length,
+      startOffset: single ? single.start.windowStart : 0,
+      items: merged.items
     });
 
-    this.tailer = new TranscriptTailer(resolved, start, (lines) => {
-      const newItems = parseLines(lines);
-      if (newItems.length > 0 && this.view) {
-        this.openLastAppendMs = Date.now();
-        if (this.openItems) {
-          for (const it of newItems) {
-            this.openItems.push(it);
-          }
-        }
-        void this.view.webview.postMessage({ type: "streamAppend", items: newItems });
-        this.maybeAutoReveal(sessionId);
+    for (const p of prepared) {
+      const tailer = new TranscriptTailer(p.candidate.filePath, p.start, (lines) => {
+        this.onProjectAppend(p.candidate.sessionId, lines);
+      });
+      this.tailers.push(tailer);
+      tailer.start();
+    }
+  }
+
+  /** Append live lines for one session of the open merged project. */
+  private onProjectAppend(sessionId: string, lines: string[]): void {
+    const state = this.openSessionState.get(sessionId);
+    if (!state) {
+      return;
+    }
+    const fresh: RenderItem[] = [];
+    for (const line of lines) {
+      // Dedup per JSONL entry (one uuid may produce several blocks).
+      const items = parseLine(line);
+      if (items.length === 0) {
+        continue;
       }
-      // Activity refresh shortly after new data lands.
-      setTimeout(() => this.postSessions(), 500);
-    });
-    this.tailer.start();
+      const uuid = items[0].uuid;
+      if (uuid) {
+        if (this.seenUuids.has(uuid)) {
+          continue; // shared history already displayed from another branch
+        }
+        this.seenUuids.add(uuid);
+      }
+      for (const item of items) {
+        fresh.push({ ...item, sessionId });
+      }
+    }
+    if (fresh.length === 0) {
+      return;
+    }
+    state.items.push(...fresh);
+    state.lastAppendMs = Date.now();
+    if (this.view) {
+      void this.view.webview.postMessage({ type: "streamAppend", sessionId, items: fresh });
+      this.maybeAutoReveal(sessionId);
+    }
+    // Activity refresh shortly after new data lands.
+    setTimeout(() => this.postSessions(), 500);
   }
 
   /**
@@ -668,10 +891,13 @@ export class PairletLiveProvider implements vscode.WebviewViewProvider {
   }
 
   private closeTail(): void {
-    if (this.tailer) {
-      this.tailer.stop();
-      this.tailer = undefined;
+    for (const t of this.tailers) {
+      t.stop();
     }
+    this.tailers = [];
+    this.openSessionState.clear();
+    this.seenUuids = new Set<string>();
+    this.singleChunk = undefined;
   }
 }
 

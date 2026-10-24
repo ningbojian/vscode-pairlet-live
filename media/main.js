@@ -23,9 +23,17 @@ const el = {
 const state = {
   sessions: [],
   openFile: undefined,
+  openProjectDir: undefined,
+  /** True when the stream merges several sessions of one project. */
+  merged: false,
+  /** sessionId -> { sessionId, filePath, phone, label } from streamStart. */
+  sessionMeta: {},
+  /** sessionId -> color slot 0..3 (user-message accent in merged views). */
+  sessionColor: {},
   atBottom: true,
   pendingNew: 0,
   // Scroll-up pagination (truncated sessions): see media/paging.js.
+  // The merged project view disables pagination (no single file offset).
   paging: window.PairletPaging ? window.PairletPaging.initialState() : { canLoad: false, startOffset: 0, loading: false, done: true },
   olderDividerShown: false,
   startShown: false
@@ -77,59 +85,61 @@ function renderList() {
     el.sessionList.appendChild(empty);
     return;
   }
-  // Group by project: header = basename (bold), full path as title attribute;
-  // sessions inside a group by recency; groups by most-recent activity desc.
-  // All labels render via textContent (inert even for hostile path strings).
+  // ONE row per project: sessions of the same project open as a single merged
+  // live window, so the list stays short and the user never has to guess which
+  // branch a conversation is in. All labels render via textContent.
   const grouping = window.PairletListGrouping;
-  const groups = grouping
-    ? grouping.groupSessions(state.sessions)
-    : [{ label: "", basename: "", sessions: state.sessions }];
+  const groups = grouping && grouping.groupProjects
+    ? grouping.groupProjects(state.sessions)
+    : [{ projectDir: "", label: "", basename: "", sessions: state.sessions, latest: 0, count: state.sessions.length, phone: false, pending: false, active: false, recent: false, latestSessionId: "" }];
   for (const g of groups) {
-    const group = make("div", "group");
-    const head = make("div", "group-head");
-    head.title = g.label;
-    head.appendChild(make("span", "group-label", g.basename || g.label));
-    group.appendChild(head);
-    for (const s of g.sessions) {
-      const row = make("button", "session-row");
-      row.type = "button";
-      row.dataset.filePath = s.filePath;
+    const row = make("button", "session-row project-row");
+    row.type = "button";
+    row.dataset.projectDir = g.projectDir;
 
-      const top = make("div", "row-top");
-      top.appendChild(make("span", "session-id", shortId(s.sessionId)));
-      if (s.phone) {
-        top.appendChild(make("span", "badge-phone", "📱 手机"));
-      }
-      if (s.pending) {
-        top.appendChild(make("span", "badge-pending", "⏸ 等待确认"));
-      }
-      if (s.active) {
-        top.appendChild(make("span", "badge-active", "活跃"));
-      } else if (s.recent) {
-        top.appendChild(make("span", "badge-recent", "48 小时内"));
-      }
-      row.appendChild(top);
-
-      const bottom = make("div", "row-bottom");
-      bottom.appendChild(make("span", "row-time", fmtRelative(s.mtimeMs)));
-      const count = s.messageCount >= 0 ? `${s.messageCount} 条消息` : "（过大，未统计）";
-      bottom.appendChild(make("span", "row-count", count));
-      row.appendChild(bottom);
-
-      row.title = `${s.projectLabel}\n${s.filePath}\n最后更新: ${fmtTime(s.mtimeMs)}`;
-      row.addEventListener("click", () => {
-        state.openFile = s.filePath;
-        showStream(s.projectLabel, shortId(s.sessionId));
-        vscode.postMessage({ type: "open", filePath: s.filePath });
-      });
-      group.appendChild(row);
+    const top = make("div", "row-top");
+    top.appendChild(make("span", "project-name", g.basename || g.label));
+    if (g.phone) {
+      top.appendChild(make("span", "badge-phone", "📱 手机"));
     }
-    el.sessionList.appendChild(group);
+    if (g.pending) {
+      top.appendChild(make("span", "badge-pending", "⏸ 等待确认"));
+    }
+    if (g.active) {
+      top.appendChild(make("span", "badge-active", "活跃"));
+    } else if (g.recent) {
+      top.appendChild(make("span", "badge-recent", "48 小时内"));
+    }
+    row.appendChild(top);
+
+    const bottom = make("div", "row-bottom");
+    bottom.appendChild(make("span", "row-time", fmtRelative(g.latest)));
+    bottom.appendChild(make("span", "row-count", `${g.count} 个会话`));
+    row.appendChild(bottom);
+
+    row.title = `${g.label}\n${g.count} 个会话\n最后更新: ${fmtTime(g.latest)}`;
+    row.addEventListener("click", () => {
+      state.openProjectDir = g.projectDir;
+      state.openFile = undefined;
+      state.merged = g.count > 1;
+      showStream(g.label, `${g.count} 个会话`);
+      vscode.postMessage({
+        type: "openProject",
+        projectDir: g.projectDir,
+        projectLabel: g.label,
+        focusSessionId: g.latestSessionId
+      });
+    });
+    el.sessionList.appendChild(row);
   }
 }
 
 function showList() {
   state.openFile = undefined;
+  state.openProjectDir = undefined;
+  state.merged = false;
+  state.sessionMeta = {};
+  state.sessionColor = {};
   el.streamLabel.textContent = "";
   el.listView.classList.remove("hidden");
   el.streamView.classList.add("hidden");
@@ -164,6 +174,7 @@ function hidePhoneAlert() {
   el.phoneAlert.textContent = "";
   el.phoneAlert.title = "";
   delete el.phoneAlert.dataset.filePath;
+  delete el.phoneAlert.dataset.projectDir;
   delete el.phoneAlert.dataset.projectLabel;
   delete el.phoneAlert.dataset.sessionId;
 }
@@ -175,6 +186,7 @@ function showPhoneAlert(msg) {
   el.phoneAlert.textContent = `📱 ${prefix}：${label}${sid ? ` · ${sid}` : ""} — 点击查看`;
   el.phoneAlert.title = typeof msg.filePath === "string" ? msg.filePath : "";
   el.phoneAlert.dataset.filePath = typeof msg.filePath === "string" ? msg.filePath : "";
+  el.phoneAlert.dataset.projectDir = typeof msg.projectDir === "string" ? msg.projectDir : "";
   el.phoneAlert.dataset.projectLabel = label;
   el.phoneAlert.dataset.sessionId = typeof msg.sessionId === "string" ? msg.sessionId : "";
   el.phoneAlert.classList.remove("hidden");
@@ -182,15 +194,27 @@ function showPhoneAlert(msg) {
 
 el.phoneAlert.addEventListener("click", () => {
   const filePath = el.phoneAlert.dataset.filePath;
-  if (!filePath) {
+  const projectDir = el.phoneAlert.dataset.projectDir;
+  const projectLabel = el.phoneAlert.dataset.projectLabel || "";
+  const sessionId = el.phoneAlert.dataset.sessionId || "";
+  if (!filePath && !projectDir) {
     return;
   }
-  const label = el.phoneAlert.dataset.projectLabel || "";
-  const sessionId = el.phoneAlert.dataset.sessionId || "";
   hidePhoneAlert();
-  state.openFile = filePath;
-  showStream(label, sessionId ? shortId(sessionId) : "");
-  vscode.postMessage({ type: "open", filePath });
+  state.openFile = filePath || undefined;
+  state.openProjectDir = projectDir || undefined;
+  state.merged = true;
+  showStream(projectLabel, sessionId ? shortId(sessionId) : "");
+  if (projectDir) {
+    vscode.postMessage({
+      type: "openProject",
+      projectDir,
+      projectLabel,
+      focusSessionId: sessionId || undefined
+    });
+  } else {
+    vscode.postMessage({ type: "open", filePath });
+  }
 });
 
 // ---------- stream rendering ----------
@@ -223,6 +247,20 @@ function appendRichText(container, text) {
 }
 
 /**
+ * Short provenance label for a message in a merged project view:
+ * "📱 abc12345" for a phone-driven session, "abc12345" otherwise.
+ * Returns "" for single-session streams (no tag noise).
+ */
+function sessionTag(sessionId) {
+  if (!state.merged || typeof sessionId !== "string" || sessionId === "") {
+    return "";
+  }
+  const meta = state.sessionMeta[sessionId];
+  const sid = shortId(sessionId);
+  return meta && meta.phone ? `📱 ${sid}` : sid;
+}
+
+/**
  * Render one item into a detached node; returns the node or null if it does
  * not render. thinking/unknown items are skipped (hidden), so the 「新消息」
  * chip must count only rendered items — never items.length.
@@ -234,11 +272,18 @@ function renderItem(item) {
   let node;
   if (item.kind === "user") {
     node = make("div", "msg msg-user");
-    const role = make("div", "msg-role", "用户输入");
+    const tag = sessionTag(item.sessionId);
+    const role = make("div", "msg-role", tag ? `用户输入 · ${tag}` : "用户输入");
     const body = make("div", "msg-text");
     appendRichText(body, item.text || "");
     node.appendChild(role);
     node.appendChild(body);
+    // Colour-code branches so two conversations in one merged timeline are
+    // distinguishable at a glance (theme chart colours; textContent only).
+    const slot = state.sessionColor[item.sessionId];
+    if (typeof slot === "number") {
+      node.classList.add(`msg-session-${slot % 4}`);
+    }
   } else if (item.kind === "assistant") {
     node = make("div", "msg msg-assistant");
     const body = make("div", "msg-text");
@@ -321,10 +366,11 @@ function pushToolRows(group, toolItems) {
  * Collapsed by default so mid-stream command noise never buries the assistant
  * text around it; expanding shows the individual rows (label + brief).
  */
-function newToolGroup(toolItems) {
+function newToolGroup(toolItems, sessionId) {
   const group = make("details", "tool-group");
   group._count = 0;
   group._names = [];
+  group._sessionId = sessionId;
   group.appendChild(make("summary", "tool-group-head"));
   pushToolRows(group, toolItems);
   return group;
@@ -340,20 +386,23 @@ function appendItems(items) {
   const before = state.atBottom;
   let rendered = 0;
   let pendingTools = null;
+  let pendingSession;
   // Tools accumulate until a non-tool message arrives, then flush as ONE group.
   // A run that continues across appends MERGES into the group already at the
-  // bottom (collapsed groups do not change height, so no viewport jump).
+  // bottom — but never across sessions in a merged project view.
   const flushTools = () => {
     if (!pendingTools || pendingTools.length === 0) {
       return;
     }
     const rows = pendingTools;
+    const sessionId = pendingSession;
     pendingTools = null;
+    pendingSession = undefined;
     const group = lastToolGroup();
-    if (group) {
+    if (group && group._sessionId === sessionId) {
       rendered += pushToolRows(group, rows);
     } else {
-      const fresh = newToolGroup(rows);
+      const fresh = newToolGroup(rows, sessionId);
       el.messages.appendChild(fresh);
       rendered += fresh._count;
     }
@@ -362,6 +411,11 @@ function appendItems(items) {
     if (it && it.kind === "tool") {
       if (!pendingTools) {
         pendingTools = [];
+        pendingSession = it.sessionId;
+      } else if (it.sessionId !== pendingSession) {
+        flushTools();
+        pendingTools = [];
+        pendingSession = it.sessionId;
       }
       pendingTools.push(it);
       continue;
@@ -517,8 +571,24 @@ window.addEventListener("message", (event) => {
     case "streamStart": {
       if (typeof msg.filePath === "string") {
         state.openFile = msg.filePath;
-        if (el.phoneAlert.dataset.filePath === msg.filePath) {
+        if (
+          el.phoneAlert.dataset.filePath === msg.filePath ||
+          (typeof msg.projectDir === "string" && el.phoneAlert.dataset.projectDir === msg.projectDir)
+        ) {
           hidePhoneAlert();
+        }
+      }
+      state.openProjectDir = typeof msg.projectDir === "string" ? msg.projectDir : undefined;
+      state.merged = !!msg.merged;
+      state.sessionMeta = {};
+      state.sessionColor = {};
+      const metas = Array.isArray(msg.sessions) ? msg.sessions : [];
+      let colorSlot = 0;
+      for (const s of metas) {
+        if (s && typeof s.sessionId === "string" && s.sessionId !== "") {
+          state.sessionMeta[s.sessionId] = s;
+          state.sessionColor[s.sessionId] = colorSlot % 4;
+          colorSlot += 1;
         }
       }
       el.messages.textContent = "";
@@ -530,22 +600,27 @@ window.addEventListener("message", (event) => {
       hidePendingStrip();
       // Switch to the stream view even when the open was host-initiated
       // (e.g. the 「查看」 action on a phone waiting-for-confirmation alert).
-      showStream(msg.projectLabel || "", msg.sessionId ? shortId(msg.sessionId) : "");
-      // Pagination baseline: older chunks load only for truncated sessions
-      // that still have history before the tail window.
-      // PairletPaging.start(state, truncated, startOffset) takes THREE args —
-      // the first (prior state) is the fresh initialState() baseline.
+      showStream(
+        msg.projectLabel || "",
+        state.merged ? `${metas.length} 个会话` : msg.sessionId ? shortId(msg.sessionId) : ""
+      );
+      // Pagination baseline: older chunks load only for a single truncated
+      // session. A merged project has no single file offset, so it is always
+      // "done" (the host also answers loadOlder with done).
+      // PairletPaging.start(state, truncated, startOffset) takes THREE args.
       if (window.PairletPaging) {
         state.paging = window.PairletPaging.start(
           window.PairletPaging.initialState(),
-          !!msg.truncated,
-          typeof msg.startOffset === "number" ? msg.startOffset : 0
+          state.merged ? false : !!msg.truncated,
+          state.merged ? 0 : typeof msg.startOffset === "number" ? msg.startOffset : 0
         );
       }
       if (msg.truncated) {
-        const noteText = state.paging && state.paging.canLoad
-          ? "（仅显示文件末尾部分；向上滚动可加载更早记录）"
-          : "（仅显示文件末尾部分）";
+        const noteText = state.merged
+          ? "（合并视图：仅显示各会话最近的内容）"
+          : state.paging && state.paging.canLoad
+            ? "（仅显示文件末尾部分；向上滚动可加载更早记录）"
+            : "（仅显示文件末尾部分）";
         el.messages.appendChild(make("div", "note", noteText));
       }
       appendItems(msg.items || []);
@@ -555,7 +630,8 @@ window.addEventListener("message", (event) => {
     case "phoneSessionAlert":
       if (
         typeof msg.filePath === "string" &&
-        msg.filePath !== state.openFile
+        msg.filePath !== state.openFile &&
+        !(typeof msg.projectDir === "string" && msg.projectDir !== "" && msg.projectDir === state.openProjectDir)
       ) {
         showPhoneAlert(msg);
       }

@@ -58,5 +58,85 @@
     return groups;
   }
 
-  window.PairletListGrouping = { basename: basename, groupSessions: groupSessions };
+  /**
+   * Collapse a session list into ONE row per project (the list's primary unit).
+   * Grouping key is `projectDir` (the slug directory — unique even when the
+   * lossy decoded labels of two sessions differ). Returns:
+   *   { projectDir, label, basename, sessions, latest, count,
+   *     phone, pending, active, recent, latestSessionId }
+   * Sessions inside a project stay sorted by mtime desc; projects by latest desc.
+   */
+  function groupProjects(sessions) {
+    var list = Array.isArray(sessions) ? sessions : [];
+    var byDir = new Map();
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      if (!s) {
+        continue;
+      }
+      var key =
+        typeof s.projectDir === "string" && s.projectDir !== ""
+          ? s.projectDir
+          : typeof s.projectLabel === "string"
+            ? s.projectLabel
+            : "";
+      if (!byDir.has(key)) {
+        byDir.set(key, []);
+      }
+      byDir.get(key).push(s);
+    }
+    var groups = [];
+    byDir.forEach(function (items, key) {
+      items.sort(function (a, b) {
+        return (b.mtimeMs || 0) - (a.mtimeMs || 0);
+      });
+      // Prefer the most frequent non-empty label (exact cwd usually repeats);
+      // ties go to the longer string (restores spaces from the lossy slug).
+      var counts = new Map();
+      for (var j = 0; j < items.length; j++) {
+        var l = typeof items[j].projectLabel === "string" && items[j].projectLabel !== "" ? items[j].projectLabel : "";
+        if (l) {
+          counts.set(l, (counts.get(l) || 0) + 1);
+        }
+      }
+      var label = "";
+      var bestCount = -1;
+      counts.forEach(function (c, l) {
+        if (c > bestCount || (c === bestCount && l.length > label.length)) {
+          bestCount = c;
+          label = l;
+        }
+      });
+      if (!label) {
+        label = key;
+      }
+      groups.push({
+        projectDir: typeof items[0].projectDir === "string" ? items[0].projectDir : "",
+        label: label,
+        basename: basename(label),
+        sessions: items,
+        latest: items.length > 0 ? items[0].mtimeMs || 0 : 0,
+        count: items.length,
+        phone: items.some(function (x) {
+          return !!x.phone;
+        }),
+        pending: items.some(function (x) {
+          return !!x.pending;
+        }),
+        active: items.some(function (x) {
+          return !!x.active;
+        }),
+        recent: items.some(function (x) {
+          return !!x.recent;
+        }),
+        latestSessionId: items[0].sessionId || ""
+      });
+    });
+    groups.sort(function (a, b) {
+      return b.latest - a.latest;
+    });
+    return groups;
+  }
+
+  window.PairletListGrouping = { basename: basename, groupSessions: groupSessions, groupProjects: groupProjects };
 })();

@@ -156,6 +156,12 @@ body {
   font-size: 12px;
 }
 
+.project-name {
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
 .badge-phone {
   font-size: 10px;
   padding: 0 6px;
@@ -272,6 +278,35 @@ body {
   font-weight: 600;
   color: #6ea3f0;
   margin-bottom: 3px;
+}
+
+/* Merged project view: branch accent colours on user messages. */
+.msg-user.msg-session-0 {
+  border-left-color: var(--vscode-charts-blue, #3e78dc);
+}
+.msg-user.msg-session-0 .msg-role {
+  color: var(--vscode-charts-blue, #6ea3f0);
+}
+
+.msg-user.msg-session-1 {
+  border-left-color: var(--vscode-charts-orange, #d18616);
+}
+.msg-user.msg-session-1 .msg-role {
+  color: var(--vscode-charts-orange, #d18616);
+}
+
+.msg-user.msg-session-2 {
+  border-left-color: var(--vscode-charts-green, #388a34);
+}
+.msg-user.msg-session-2 .msg-role {
+  color: var(--vscode-charts-green, #4ec94e);
+}
+
+.msg-user.msg-session-3 {
+  border-left-color: var(--vscode-charts-purple, #b180d7);
+}
+.msg-user.msg-session-3 .msg-role {
+  color: var(--vscode-charts-purple, #b180d7);
 }
 
 .msg-assistant {

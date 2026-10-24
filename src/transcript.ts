@@ -20,6 +20,13 @@ export interface RenderItem {
   kind: ItemKind;
   /** Primary text (user input, assistant text, system content, thinking). */
   text?: string;
+  /**
+   * JSONL entry `uuid`. Shared history copied by `--resume` keeps identical
+   * uuids across session files, so merged project views can de-duplicate it.
+   */
+  uuid?: string;
+  /** Session id, annotated by the host when items from several sessions merge. */
+  sessionId?: string;
   /** Tool name for kind==="tool" (e.g. "Bash", "Read"). */
   toolName?: string;
   /** One-line summary of tool input (kind==="tool") or result marker. */
@@ -163,6 +170,20 @@ function systemText(content: unknown): string | undefined {
 }
 
 /**
+ * Attach the source line's uuid to every item it produced. All blocks in one
+ * JSONL entry share the entry uuid; merge de-duplication is per entry, so the
+ * whole entry survives or disappears together.
+ */
+function tagUuid(items: RenderItem[], uuid: string | undefined): RenderItem[] {
+  if (uuid !== undefined) {
+    for (const it of items) {
+      it.uuid = uuid;
+    }
+  }
+  return items;
+}
+
+/**
  * Parse one JSONL line into zero or more render items.
  * Never throws: unparseable lines become a single "unknown" fallback item.
  * Internal noise types yield an empty array (skipped, not shown).
@@ -185,6 +206,7 @@ export function parseLine(line: string): RenderItem[] {
 
   const type = typeof obj.type === "string" ? obj.type : undefined;
   const timestamp = asText(obj.timestamp);
+  const uuid = asText(obj.uuid);
   if (type && IGNORED_TYPES.has(type)) {
     return [];
   }
@@ -258,23 +280,26 @@ export function parseLine(line: string): RenderItem[] {
         out.push({ kind: "unknown", fallbackType: `${type}-content:${typeof content}`, timestamp });
       }
     }
-    return out;
+    return tagUuid(out, uuid);
   }
 
   if (type === "system") {
     const text = systemText(obj.content);
     const subtype = asText(obj.subtype);
-    return [
-      {
-        kind: "system",
-        text,
-        timestamp,
-        fallbackType: subtype || "system"
-      }
-    ];
+    return tagUuid(
+      [
+        {
+          kind: "system",
+          text,
+          timestamp,
+          fallbackType: subtype || "system"
+        }
+      ],
+      uuid
+    );
   }
 
-  return [{ kind: "unknown", fallbackType: type ?? "no-type", timestamp }];
+  return tagUuid([{ kind: "unknown", fallbackType: type ?? "no-type", timestamp }], uuid);
 }
 
 /** Parse many lines; concatenates items from each line. Never throws. */

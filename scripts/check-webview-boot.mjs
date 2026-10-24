@@ -5,23 +5,27 @@
 // the media sources; writes nothing; no network.
 //
 // Proves (the M1-M3 class that isolated module harnesses could not see):
-//   (a) {type:'sessions'} renders WITHOUT throwing: group headers, session
-//       rows and the phone badge land in the shim DOM (M1: renderList must
-//       touch el.sessionList, not the nonexistent state.sessionList).
+//   (a) {type:'sessions'} renders WITHOUT throwing: ONE row per project (with
+//       aggregated badges), so the list stays short (M1: renderList must touch
+//       el.sessionList, not the nonexistent state.sessionList).
+//   (a2) a project row click posts {type:'openProject'} with projectDir.
 //   (b) {type:'streamStart', truncated:true, startOffset:4096} leaves
 //       state.paging.canLoad === true (M2: PairletPaging.start takes THREE
 //       args); simulating scrollTop=0 posts EXACTLY ONE {type:'loadOlder'};
 //       after {type:'olderChunk', newStartOffset:0, done:true} the done
 //       guard refuses further requests (no double-load, no request storm).
 //   (c) the back button (showList path) does not throw (M3: state.streamLabel
-//       must be el.streamLabel) and re-renders the session list.
+//       must be el.streamLabel) and re-renders the project list.
+//   (c2) a merged streamStart tags user messages with session provenance and
+//       disables pagination.
 //   (d) {type:'pendingState'} shows the waiting strip text.
 //   (e) {type:'phoneSessionAlert'} shows the 「新的手机会话」/「有新消息」 bar
-//       and its click posts {type:'open'}.
+//       and its click posts {type:'open'} (or openProject when projectDir is known).
 //   (f) consecutive tool rows collapse into ONE <details class="tool-group">
 //       (collapsed by default); a run continuing across appends merges into
-//       the bottom group, a non-tool message ends the run, and an older chunk
-//       groups its own tools above the divider.
+//       the bottom group, a non-tool message ends the run, an older chunk
+//       groups its own tools above the divider, and tools from DIFFERENT
+//       sessions never merge into one group.
 import * as fs from "fs";
 import * as path from "path";
 import * as vm from "vm";
@@ -282,23 +286,45 @@ function dispatch(msg) {
   return threw;
 }
 
-// ---------- (a) sessions render: groups + rows + phone badge (M1) ----------
+// ---------- (a) sessions render: ONE row per project + aggregated badges ----------
+const now = Date.now();
+const sessions = [
+  { filePath: "C:\\x\\alpha\\a1.jsonl", sessionId: "sess-aaaaaaaaaaaa", projectDir: "proj-alpha", projectLabel: "C:\\proj\\alpha", mtimeMs: now - 5000, size: 100, messageCount: 3, phone: false, active: false, recent: true, pending: false },
+  { filePath: "C:\\x\\alpha\\a2.jsonl", sessionId: "sess-bbbbbbbbbbbb", projectDir: "proj-alpha", projectLabel: "C:\\proj\\alpha", mtimeMs: now - 1000, size: 100, messageCount: 7, phone: false, active: false, recent: true, pending: true },
+  { filePath: "C:\\y\\beta\\b1.jsonl", sessionId: "sess-cccccccccccc", projectDir: "proj-beta", projectLabel: "C:\\proj\\beta", mtimeMs: now - 2000, size: 100, messageCount: 12, phone: true, active: false, recent: true, pending: false }
+];
 {
-  const now = Date.now();
-  const sessions = [
-    { filePath: "C:\\x\\alpha\\a1.jsonl", sessionId: "sess-aaaaaaaaaaaa", projectDir: "proj-alpha", projectLabel: "C:\\proj\\alpha", mtimeMs: now - 5000, size: 100, messageCount: 3, phone: false, active: false, recent: true, pending: false },
-    { filePath: "C:\\x\\alpha\\a2.jsonl", sessionId: "sess-bbbbbbbbbbbb", projectDir: "proj-alpha", projectLabel: "C:\\proj\\alpha", mtimeMs: now - 1000, size: 100, messageCount: 7, phone: false, active: false, recent: true, pending: true },
-    { filePath: "C:\\y\\beta\\b1.jsonl", sessionId: "sess-cccccccccccc", projectDir: "proj-beta", projectLabel: "C:\\proj\\beta", mtimeMs: now - 2000, size: 100, messageCount: 12, phone: true, active: false, recent: true, pending: false }
-  ];
   const err = dispatch({ type: "sessions", sessions });
   check("sessions: message handler does not throw (M1)", err === null, err && err.stack);
   const list = byId.get("session-list");
-  check("sessions: two group heads rendered", countClass(list, "group-head") === 2, `heads=${countClass(list, "group-head")}`);
-  check("sessions: three session rows rendered", countClass(list, "session-row") === 3, `rows=${countClass(list, "session-row")}`);
+  check("sessions: one row per project", countClass(list, "session-row") === 2, `rows=${countClass(list, "session-row")}`);
+  check("sessions: no per-session group headers", countClass(list, "group-head") === 0, `heads=${countClass(list, "group-head")}`);
   const text = collectText(list);
-  check("sessions: group labels are basenames", text.includes("alpha") && text.includes("beta"), text.slice(0, 200));
+  check("sessions: project basenames rendered", text.includes("alpha") && text.includes("beta"), text.slice(0, 200));
+  check("sessions: session counts rendered", text.includes("2 个会话") && text.includes("1 个会话"), text.slice(0, 300));
   check("sessions: phone badge present", text.includes("📱"), text.slice(0, 300));
   check("sessions: pending badge present", text.includes("等待确认"));
+}
+
+// ---------- (a2) project row click -> openProject ----------
+{
+  const row = byId.get("session-list").children[0];
+  posted.length = 0;
+  let err = null;
+  try {
+    row.fire("click", {});
+  } catch (e) {
+    err = e;
+  }
+  check("project row: click does not throw", err === null, err && err.stack);
+  const msg = posted.find((m) => m && m.type === "openProject");
+  check("project row: posts openProject", !!msg, JSON.stringify(posted));
+  check("project row: message carries projectDir", msg && msg.projectDir === "proj-alpha", msg && msg.projectDir);
+  check("project row: focus is the newest session", msg && msg.focusSessionId === "sess-bbbbbbbbbbbb", msg && msg.focusSessionId);
+  check("project row: state marks the open project", state.openProjectDir === "proj-alpha", state.openProjectDir);
+  // Return to the list for the following stream/paging tests.
+  byId.get("back-btn").fire("click", {});
+  check("project row: back returns to the list", !byId.get("list-view").classList.contains("hidden"));
 }
 
 // ---------- (b) paging glue: start arity + loadOlder + done guard (M2) ----------
@@ -358,9 +384,50 @@ function dispatch(msg) {
   check("back: click handler does not throw (M3)", clickErr === null, clickErr && clickErr.stack);
   check("back: {type:'back'} posted", posted.some((m) => m && m.type === "back"), JSON.stringify(posted));
   check("back: list view visible, stream hidden", !byId.get("list-view").classList.contains("hidden") && byId.get("stream-view").classList.contains("hidden"));
-  check("back: session list re-rendered", countClass(byId.get("session-list"), "session-row") === 3);
+  check("back: session list re-rendered", countClass(byId.get("session-list"), "session-row") === 2);
   check("back: stream label cleared", el.streamLabel.textContent === "", el.streamLabel.textContent);
   check("back: paging reset to initial", state.paging.canLoad === false && state.paging.done === true, JSON.stringify(state.paging));
+}
+
+// ---------- (c2) merged stream: provenance tags + no pagination ----------
+{
+  posted.length = 0;
+  const err = dispatch({
+    type: "streamStart",
+    filePath: "C:\\x\\merged\\m2.jsonl",
+    sessionId: "sess-m22222222222",
+    projectDir: "proj-merged",
+    projectLabel: "C:\\proj\\merged",
+    merged: true,
+    focusSessionId: "sess-m22222222222",
+    sessions: [
+      { sessionId: "sess-m11111111111", phone: true, filePath: "C:\\x\\merged\\m1.jsonl" },
+      { sessionId: "sess-m22222222222", phone: false, filePath: "C:\\x\\merged\\m2.jsonl" }
+    ],
+    truncated: true,
+    startOffset: 0,
+    items: [
+      { kind: "user", sessionId: "sess-m11111111111", text: "from phone src/extension.ts:1" },
+      { kind: "assistant", sessionId: "sess-m11111111111", text: "reply" },
+      { kind: "user", sessionId: "sess-m22222222222", text: "from vscode" }
+    ]
+  });
+  check("merged stream: handler does not throw", err === null, err && err.stack);
+  check("merged stream: state.merged set", state.merged === true);
+  check("merged stream: state.openProjectDir set", state.openProjectDir === "proj-merged", state.openProjectDir);
+  check("merged stream: pagination disabled", state.paging.canLoad === false && state.paging.done === true, JSON.stringify(state.paging));
+  const msgs = byId.get("messages");
+  const text = collectText(msgs);
+  check("merged stream: phone provenance tag", text.includes("📱 sess-m11"), text.slice(0, 400));
+  check("merged stream: desktop provenance tag", text.includes("sess-m22"), text.slice(0, 400));
+  check("merged stream: branch colour slots applied", countClass(msgs, "msg-session-0") >= 1 && countClass(msgs, "msg-session-1") >= 1, `s0=${countClass(msgs, "msg-session-0")} s1=${countClass(msgs, "msg-session-1")}`);
+  check("merged stream: merged truncation note", text.includes("合并视图"), text.slice(0, 400));
+  check("merged stream: assistant reply rendered", text.includes("reply"));
+
+  posted.length = 0;
+  byId.get("stream-view").scrollTop = 0;
+  byId.get("stream-view").fire("scroll");
+  check("merged stream: scroll-top never requests older chunks", posted.filter((m) => m && m.type === "loadOlder").length === 0, JSON.stringify(posted));
 }
 
 // ---------- (d) pendingState strip ----------
@@ -388,6 +455,7 @@ function dispatch(msg) {
     type: "phoneSessionAlert",
     reason: "new",
     filePath: "C:\\x\\gamma\\c1.jsonl",
+    projectDir: "proj-gamma",
     sessionId: "sess-dddddddddddd",
     projectLabel: "C:\\proj\\gamma"
   });
@@ -398,8 +466,10 @@ function dispatch(msg) {
 
   posted.length = 0;
   alert.fire("click", {});
-  check("phoneSessionAlert: click posts open with filePath", posted.some((m) => m && m.type === "open" && m.filePath === "C:\\x\\gamma\\c1.jsonl"), JSON.stringify(posted));
-  check("phoneSessionAlert: click sets state.openFile", state.openFile === "C:\\x\\gamma\\c1.jsonl", state.openFile);
+  const openMsg = posted.find((m) => m && m.type === "openProject");
+  check("phoneSessionAlert: click posts openProject", !!openMsg && openMsg.projectDir === "proj-gamma", JSON.stringify(posted));
+  check("phoneSessionAlert: click focuses the phone session", openMsg && openMsg.focusSessionId === "sess-dddddddddddd", openMsg && openMsg.focusSessionId);
+  check("phoneSessionAlert: click sets state.openProjectDir", state.openProjectDir === "proj-gamma", state.openProjectDir);
   check("phoneSessionAlert: click hides the bar", alert.classList.contains("hidden"));
 
   // Existing phone session that just received more output.
@@ -407,6 +477,7 @@ function dispatch(msg) {
     type: "phoneSessionAlert",
     reason: "activity",
     filePath: "C:\\x\\delta\\d1.jsonl",
+    projectDir: "proj-delta",
     sessionId: "sess-eeeeeeeeeeee",
     projectLabel: "C:\\proj\\delta"
   });
@@ -414,9 +485,20 @@ function dispatch(msg) {
 
   posted.length = 0;
   alert.fire("click", {});
-  check("phoneSessionAlert: activity click opens the active session", posted.some((m) => m && m.type === "open" && m.filePath === "C:\\x\\delta\\d1.jsonl"), JSON.stringify(posted));
-  check("phoneSessionAlert: activity click updates state.openFile", state.openFile === "C:\\x\\delta\\d1.jsonl", state.openFile);
+  check("phoneSessionAlert: activity click opens the active project", posted.some((m) => m && m.type === "openProject" && m.projectDir === "proj-delta"), JSON.stringify(posted));
+  check("phoneSessionAlert: activity click updates state.openProjectDir", state.openProjectDir === "proj-delta", state.openProjectDir);
   check("phoneSessionAlert: activity click hides the bar", alert.classList.contains("hidden"));
+
+  // Activity in the project already on screen must not raise the bar again.
+  dispatch({
+    type: "phoneSessionAlert",
+    reason: "activity",
+    filePath: "C:\\x\\delta\\d2.jsonl",
+    projectDir: "proj-delta",
+    sessionId: "sess-ffffffffffff",
+    projectLabel: "C:\\proj\\delta"
+  });
+  check("phoneSessionAlert: duplicate alert for the open project suppressed", alert.classList.contains("hidden"));
 }
 
 // ---------- extras: stream messages keep flowing without throws ----------
@@ -485,6 +567,34 @@ function dispatch(msg) {
   check("toolrun: chunk group sits above the divider", msgs.children[0].classList.contains("tool-group") && msgs.children[2].classList.contains("older-divider"),
     `c0=${msgs.children[0].className} c2=${msgs.children[2].className}`);
   check("toolrun: chunk head shows 2 items", (msgs.children[0].firstChild.textContent || "").includes("2 项"), msgs.children[0].firstChild.textContent);
+}
+
+// ---------- (g) tool groups never merge across sessions ----------
+{
+  dispatch({
+    type: "streamStart",
+    projectDir: "proj-tools",
+    projectLabel: "C:\\proj\\tools",
+    merged: true,
+    sessions: [
+      { sessionId: "sess-t11111111111", phone: false, filePath: "C:\\x\\tools\\t1.jsonl" },
+      { sessionId: "sess-t22222222222", phone: true, filePath: "C:\\x\\tools\\t2.jsonl" }
+    ],
+    truncated: false,
+    startOffset: 0,
+    items: []
+  });
+  const err = dispatch({
+    type: "streamAppend",
+    items: [
+      { kind: "tool", sessionId: "sess-t11111111111", toolName: "Read", brief: "a" },
+      { kind: "tool", sessionId: "sess-t22222222222", toolName: "Bash", brief: "b" }
+    ]
+  });
+  check("toolrun: cross-session append handled without throw", err === null, err && err.stack);
+  const msgs = byId.get("messages");
+  check("toolrun: one group per session", countClass(msgs, "tool-group") === 2, `groups=${countClass(msgs, "tool-group")}`);
+  check("toolrun: both tool rows rendered", countClass(msgs, "msg-tool") === 2, `rows=${countClass(msgs, "msg-tool")}`);
 }
 
 if (failures > 0) {

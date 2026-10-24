@@ -23,6 +23,7 @@ vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(import.meta.dirname, "..", "media", "grouping.js"), "utf8"), sandbox);
 const G = sandbox.window.PairletListGrouping;
 check("grouping.js exposes PairletListGrouping", !!G && typeof G.groupSessions === "function");
+check("grouping.js exposes groupProjects", !!G && typeof G.groupProjects === "function");
 
 // ---------- order: groups by latest activity desc, sessions by recency desc ----------
 {
@@ -82,6 +83,44 @@ check("grouping.js exposes PairletListGrouping", !!G && typeof G.groupSessions =
   check("non-array input tolerated", G.groupSessions(undefined).length === 0 && G.groupSessions("x").length === 0);
   const emptyGroup = G.groupSessions([{ sessionId: "z", projectLabel: "p", mtimeMs: NaN }]);
   check("NaN mtime tolerated", emptyGroup.length === 1 && emptyGroup[0].latest === 0);
+}
+
+// ---------- groupProjects: ONE list row per project directory ----------
+{
+  const sessions = [
+    { sessionId: "a1", projectDir: "proj-alpha", projectLabel: "C:\\proj\\alpha", mtimeMs: 100, phone: false, pending: false, active: false, recent: true },
+    { sessionId: "a2", projectDir: "proj-alpha", projectLabel: "C:\\proj\\alpha", mtimeMs: 500, phone: true, pending: true, active: true, recent: true },
+    { sessionId: "b1", projectDir: "proj-beta", projectLabel: "C:\\proj\\beta", mtimeMs: 900, phone: false, pending: false, active: false, recent: true }
+  ];
+  const groups = G.groupProjects(sessions);
+  check("groupProjects: one group per projectDir", groups.length === 2, JSON.stringify(groups.map((g) => g.projectDir)));
+  check("groupProjects: groups ordered by latest activity desc", groups[0].projectDir === "proj-beta" && groups[1].projectDir === "proj-alpha");
+  check("groupProjects: alpha count", groups[1].count === 2, groups[1].count);
+  check("groupProjects: alpha sessions recency desc", JSON.stringify(groups[1].sessions.map((s) => s.sessionId)) === JSON.stringify(["a2", "a1"]));
+  check("groupProjects: aggregated phone/pending/active flags", groups[1].phone === true && groups[1].pending === true && groups[1].active === true);
+  check("groupProjects: latest = newest session mtime", groups[1].latest === 500);
+  check("groupProjects: latestSessionId", groups[1].latestSessionId === "a2");
+  check("groupProjects: single-session project count", groups[0].count === 1 && groups[0].latestSessionId === "b1");
+}
+
+// ---------- groupProjects: same dir, differing labels -> one row, best label ----------
+{
+  const groups = G.groupProjects([
+    { sessionId: "x1", projectDir: "slug", projectLabel: "C:\\lossy-path", mtimeMs: 1 },
+    { sessionId: "x2", projectDir: "slug", projectLabel: "C:\\exact path", mtimeMs: 2 },
+    { sessionId: "x3", projectDir: "slug", projectLabel: "C:\\exact path", mtimeMs: 3 }
+  ]);
+  check("groupProjects: differing labels merge by projectDir", groups.length === 1 && groups[0].count === 3, JSON.stringify(groups));
+  check("groupProjects: most frequent label wins", groups[0].label === "C:\\exact path", groups[0].label);
+  check("groupProjects: basename of chosen label", groups[0].basename === "exact path", groups[0].basename);
+}
+
+// ---------- groupProjects: robustness ----------
+{
+  check("groupProjects: empty input", G.groupProjects([]).length === 0);
+  check("groupProjects: non-array input", G.groupProjects(undefined).length === 0 && G.groupProjects("x").length === 0);
+  const groups = G.groupProjects([{ sessionId: "z", projectDir: "d", mtimeMs: NaN }]);
+  check("groupProjects: NaN mtime tolerated", groups.length === 1 && groups[0].latest === 0);
 }
 
 if (failures > 0) {
