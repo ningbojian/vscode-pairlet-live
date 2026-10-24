@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-24
+
 ### Added
 
 - **项目级合并直播视图**：同一项目的所有会话合并成一条按时间排序的时间线，列表里每个项目
@@ -34,7 +36,7 @@
 - 手机端在**新会话**里发送 Prompt 时，面板只显示 VS Code 当前会话、看不到手机消息的问题。
 - 宿主主动打开会话（通知「查看」/自动切换）时，webview 现在会同步打开的项目与会话焦点。
 - 安装文档中的扩展目录名改为 VS Code 实际使用的 `<publisher>.<name>-<version>`
-  （`ningbojian.pairlet-live-0.0.1`）。
+  （如 `ningbojian.pairlet-live-0.1.0`）。
 
 ## [0.0.1] - 2026-10-24
 
@@ -52,3 +54,6 @@
 - 手机会话等待确认通知（`pairletLive.notifyWaiting`）。
 - 开发自检脚本：transcript / tailer / phone / paths / paging / grouping / pending / webview boot。
 - README、安装说明、兼容性契约、上游贡献策略、CI。
+
+[Unreleased]: https://github.com/ningbojian/vscode-pairlet-live/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ningbojian/vscode-pairlet-live/releases/tag/v0.1.0

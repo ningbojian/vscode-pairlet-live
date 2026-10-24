@@ -11,7 +11,24 @@
 > ⚠️ 只读直播 · 输入请在手机 App 或 VS Code 原生扩展中进行。
 > 本扩展从不写入转录、从不启动 claude、从不注入输入，也没有任何网络请求。
 
-## 方式一：Extension Development Host（开发调试）
+## 方式一：下载 VSIX（推荐）
+
+1. 打开 [最新 Release](https://github.com/ningbojian/vscode-pairlet-live/releases/latest)，
+   下载 `pairlet-live-0.1.0.vsix`。
+2. 安装（在下载目录执行）：
+
+   ```bat
+   code --install-extension .\pairlet-live-0.1.0.vsix
+   ```
+
+   或在 VS Code 扩展视图右上角 `...` → **Install from VSIX...** 选择该文件。
+3. 重新加载窗口，点击活动栏的 **Pairlet Live** 图标。
+
+> 之前若用手工复制文件夹的方式安装过，请先执行
+> `code --uninstall-extension ningbojian.pairlet-live`，再安装 VSIX。
+> 同一扩展存在两个副本时会争抢 `pairletLive.view`，表现为“扩展无效/激活失败”。
+
+## 方式二：Extension Development Host（开发调试）
 
 1. 用 VS Code 打开本文件夹（`vscode-pairlet-live`）。
 2. 按 `F5`（或菜单 运行 → 启动调试），会弹出一个「扩展开发宿主」窗口。
@@ -19,7 +36,7 @@
 
 修改代码后在调试窗口按 `Ctrl+R`（重新加载窗口）即可看到改动。
 
-## 方式二：安装到本地（日常使用）
+## 方式三：手工复制到扩展目录
 
 1. 先编译：
 
@@ -31,14 +48,16 @@
 2. 把整个文件夹复制到 VS Code 扩展目录，文件夹名必须是 `<publisher>.<name>-<version>` 格式：
 
    ```bat
-   xcopy /E /I "C:\Users\Lenovo\Desktop\job\repos\vscode-pairlet-live" "%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-0.0.1"
+   xcopy /E /I "C:\Users\Lenovo\Desktop\job\repos\vscode-pairlet-live" "%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-0.1.0"
    ```
 
-   即：把本文件夹整体复制到 `C:\Users\<你的用户名>\.vscode\extensions\ningbojian.pairlet-live-0.0.1`（在资源管理器手动复制也可以）。
+   即：把本文件夹整体复制到 `C:\Users\<你的用户名>\.vscode\extensions\ningbojian.pairlet-live-0.1.0`（在资源管理器手动复制也可以）。
    如果之后改了 `package.json` 里的 `publisher` 或 `version`，文件夹名也要同步改成新的 `<publisher>.<name>-<version>`。
 
 3. 重新加载窗口：`Ctrl+Shift+P` → `Developer: Reload Window`（开发者：重新加载窗口）。
 4. 点击活动栏的 **Pairlet Live** 图标。
+
+> 手工复制不会写入 VS Code 的安装元数据，升级/卸载容易留下重复副本；日常使用请优先选方式一。
 
 ## 使用
 
@@ -78,7 +97,8 @@
 
 ## 卸载
 
-删除 `%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-0.0.1` 文件夹，然后 Reload Window。
+执行 `code --uninstall-extension ningbojian.pairlet-live`，或删除
+`%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-*` 文件夹，然后 Reload Window。
 
 ## 自检（开发者）
 

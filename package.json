@@ -2,7 +2,7 @@
   "name": "pairlet-live",
   "displayName": "Pairlet Live",
   "description": "只读直播手机端驱动的 Claude Code 会话（Pairlet）",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "ningbojian",
   "license": "MIT",
   "repository": {
@@ -79,6 +79,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^4.0.0",
     "typescript": "^5.6.0"
   }
 }

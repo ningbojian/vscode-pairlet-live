@@ -60,9 +60,10 @@ VS Code 扩展与 `--resume` 选择器隐藏（`entrypoint:"sdk-cli"`），但�
 - [x] 已加 `repository` / `bugs` / `homepage`，指向 `https://github.com/ningbojian/vscode-pairlet-live`。
 - [ ] 决定名称：保留 `Pairlet Live` 需注明 Unofficial 并确认品牌使用；
       更安全的备选是中性名（如 `Agent Live View`）+ 描述「works with Pairlet」。
-- [x] `CHANGELOG.md` 的占位链接已移除；发布时再补 release 链接。
+- [x] `CHANGELOG.md` 已补 Release/compare 链接。
 - [x] 跑过 `npm run compile` 与 `npm run check:ci`。
-- [x] 用 `npx @vscode/vsce package` 打过 VSIX（本地已生成 `pairlet-live-0.0.1.vsix`）。
+- [x] `@vscode/vsce` 已作为 devDependency；`v*` tag 由 GitHub Actions 打包并创建 Release
+      （当前分发 `pairlet-live-0.1.0.vsix`）。
 - [ ] 在干净 VS Code 中安装 VSIX 验证。
 - [x] README/INSTALL 的「非官方」声明与支持范围已同步。
 

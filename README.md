@@ -3,6 +3,9 @@
 一个 **只读** 的 VS Code 侧边栏扩展：实时直播手机端（Pairlet）驱动的 Claude Code 会话。
 
 > 代码仓库：[github.com/ningbojian/vscode-pairlet-live](https://github.com/ningbojian/vscode-pairlet-live)
+>
+> 下载安装：[最新 Release](https://github.com/ningbojian/vscode-pairlet-live/releases/latest)
+> （`pairlet-live-0.1.0.vsix`）
 
 > **非官方社区项目。** 本项目与 [heypandax/pairlet](https://github.com/heypandax/pairlet)
 > 无隶属关系，也未获其背书；Pairlet 名称与商标归其作者所有。
@@ -101,7 +104,24 @@
 
 ## 安装
 
-### 方式一：开发调试（推荐先用这个验证）
+### 方式一：下载 VSIX（推荐日常使用）
+
+1. 从 [Releases](https://github.com/ningbojian/vscode-pairlet-live/releases/latest) 下载
+   `pairlet-live-0.1.0.vsix`。
+2. 安装：
+
+   ```bat
+   code --install-extension .\pairlet-live-0.1.0.vsix
+   ```
+
+   或在 VS Code 的扩展视图右上角 `...` → **Install from VSIX...** 选择该文件。
+3. 重新加载窗口，点击活动栏的 **Pairlet Live** 图标。
+
+> 如果之前用「复制文件夹」的方式装过旧版本，先执行
+> `code --uninstall-extension ningbojian.pairlet-live`，避免同一扩展出现两个副本
+> （两个副本会争抢 `pairletLive.view`，导致扩展显示为无效/激活失败）。
+
+### 方式二：开发调试
 
 ```bat
 npm install
@@ -114,21 +134,22 @@ npm run compile
 > 仓库已附 [.vscode/launch.json](.vscode/launch.json) 与 [.vscode/tasks.json](.vscode/tasks.json)，
 > `F5` 会先执行 `npm: compile` 再启动扩展宿主。
 
-### 方式二：安装到本地日常使用
+### 方式三：手工复制到扩展目录
 
 ```bat
 npm install
 npm run compile
-xcopy /E /I "C:\Users\Lenovo\Desktop\job\repos\vscode-pairlet-live" "%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-0.0.1"
+xcopy /E /I "C:\Users\Lenovo\Desktop\job\repos\vscode-pairlet-live" "%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-0.1.0"
 ```
 
-文件夹名必须是 `<publisher>.<name>-<version>` 格式（`publisher: "ningbojian"` + `name: "pairlet-live"` → `ningbojian.pairlet-live-0.0.1`）。
+文件夹名必须是 `<publisher>.<name>-<version>` 格式（`publisher: "ningbojian"` + `name: "pairlet-live"` → `ningbojian.pairlet-live-0.1.0`）。
 复制时可以不带 `node_modules/`、`src/`、`scripts/`、`*.map`——运行时只需要 `package.json`、
-`out/*.js` 和 `media/`。
+`out/*.js` 和 `media/`。这种方式不会写入安装元数据，升级时建议改用 VSIX。
 
 然后 `Ctrl+Shift+P` → `Developer: Reload Window`，点击活动栏的 **Pairlet Live** 图标。
 
-卸载：删除 `%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-0.0.1` 后重载窗口。
+卸载：`code --uninstall-extension ningbojian.pairlet-live`，或删除
+`%USERPROFILE%\.vscode\extensions\ningbojian.pairlet-live-*` 后重载窗口。
 
 ---
 
@@ -224,9 +245,9 @@ npm run watch          :: 增量编译
 
 ### P2 — 工程与发布
 
-13. **VSIX 可本地打包，但还没有市场发布链路**：`vsce` 未作为 devDependency，
-    缺 128×128 市场图标；`publisher` 已改为 `ningbojian`，`repository` / `bugs` / `homepage`
-    已指向 GitHub，但尚未创建 Marketplace publisher / Release。
+13. **有 GitHub Release，但还没有 Marketplace 发布链路**：`@vscode/vsce` 已是 devDependency，
+    `v*` tag 会由 GitHub Actions 自动打包并创建 Release；但仍缺 128×128 市场图标，
+    也尚未注册 Marketplace publisher。GitHub Releases 是本项目当前的分发渠道。
 14. **没有标准测试框架与 CI**：自检脚本是手工 `npm run`，部分依赖本机 `~/.claude` 真实数据；
     建议把纯函数测试迁到 Vitest，真实数据检查标记为可选。
 15. **`check:paths` 在超大转录上极慢**：110MB 文件上超过 5 分钟未结束（疑似正则在大行上回溯），
