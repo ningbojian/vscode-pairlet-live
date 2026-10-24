@@ -1,0 +1,10 @@
+.vscode/**
+.github/**
+src/**
+scripts/**
+node_modules/**
+out/**/*.map
+tsconfig.json
+*.vsix
+.gitignore
+README.html

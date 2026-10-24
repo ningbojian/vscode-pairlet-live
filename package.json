@@ -1,0 +1,83 @@
+{
+  "name": "pairlet-live",
+  "displayName": "Pairlet Live",
+  "description": "只读直播手机端驱动的 Claude Code 会话（Pairlet）",
+  "version": "0.0.1",
+  "publisher": "ningbojian",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ningbojian/vscode-pairlet-live.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ningbojian/vscode-pairlet-live/issues"
+  },
+  "homepage": "https://github.com/ningbojian/vscode-pairlet-live#readme",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "pairlet",
+          "title": "Pairlet Live",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "pairlet": [
+        {
+          "type": "webview",
+          "id": "pairletLive.view",
+          "name": "Pairlet Live"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Pairlet Live",
+      "properties": {
+        "pairletLive.autoReveal": {
+          "type": "boolean",
+          "default": true,
+          "description": "手机端（Pairlet）会话有新消息时自动显示并聚焦 Pairlet Live 面板。桌面/扩展驱动的会话永不触发自动显示。"
+        },
+        "pairletLive.autoOpenNewPhoneSession": {
+          "type": "boolean",
+          "default": true,
+          "description": "检测到新的手机会话（TSV 中新出现且已写入消息）时，自动把直播视图切换到该会话。关闭后改为在面板顶部显示「新的手机会话」提示条，点击查看。仅在 pairletLive.autoReveal 开启时生效。"
+        },
+        "pairletLive.notifyWaiting": {
+          "type": "boolean",
+          "default": true,
+          "description": "手机会话等待确认（⏸ 悬停未决工具调用且文件已静止 20 秒）时，弹出一次 VS Code 通知，附「查看」按钮跳转会话。面板内状态条与列表 ⏸ 徽标不受此设置影响。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "check": "node scripts/check-transcript.mjs",
+    "check:tailer": "node scripts/check-tailer.mjs",
+    "check:phone": "node scripts/check-phone.mjs",
+    "check:paths": "node scripts/check-pathlink.mjs",
+    "check:paging": "node scripts/check-paging.mjs",
+    "check:grouping": "node scripts/check-grouping.mjs",
+    "check:pending": "node scripts/check-pending.mjs",
+    "check:boot": "node scripts/check-webview-boot.mjs",
+    "check:ci": "npm run check:tailer && npm run check:paging && npm run check:grouping && npm run check:pending && npm run check:boot",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.0"
+  }
+}
