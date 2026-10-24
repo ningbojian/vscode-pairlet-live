@@ -56,14 +56,15 @@ VS Code 扩展与 `--resume` 选择器隐藏（`entrypoint:"sdk-cli"`），但�
 
 当前 `package.json` 是本地开发配置，发布到 Marketplace 前必须处理：
 
-- [ ] `publisher` 改为你自己的 Marketplace publisher ID（不要用 `pairlet`）。
-- [ ] 加 `repository` / `bugs` / `homepage`，指向你的真实仓库。
+- [x] `publisher` 已改为 `ningbojian`（Marketplace publisher ID 仍需在 Marketplace 创建后确认）。
+- [x] 已加 `repository` / `bugs` / `homepage`，指向 `https://github.com/ningbojian/vscode-pairlet-live`。
 - [ ] 决定名称：保留 `Pairlet Live` 需注明 Unofficial 并确认品牌使用；
       更安全的备选是中性名（如 `Agent Live View`）+ 描述「works with Pairlet」。
-- [ ] `CHANGELOG.md` 的占位链接改为真实仓库地址。
-- [ ] 跑 `npm run compile` 与 `npm run check:ci`。
-- [ ] 用 `npx @vscode/vsce package` 打 VSIX，在干净 VS Code 中安装验证。
-- [ ] README/INSTALL 的「非官方」声明与支持范围已同步。
+- [x] `CHANGELOG.md` 的占位链接已移除；发布时再补 release 链接。
+- [x] 跑过 `npm run compile` 与 `npm run check:ci`。
+- [x] 用 `npx @vscode/vsce package` 打过 VSIX（本地已生成 `pairlet-live-0.0.1.vsix`）。
+- [ ] 在干净 VS Code 中安装 VSIX 验证。
+- [x] README/INSTALL 的「非官方」声明与支持范围已同步。
 
 ## 5. 可直接发的 RFC 草稿
 
